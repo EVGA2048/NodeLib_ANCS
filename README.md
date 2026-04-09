@@ -1,6 +1,8 @@
 # NodeLib_ANCS
 
-ASTROLAB / node0 — iOS 媒体控制服务库（未测试）
+ASTROLAB / node0 — iOS Media Control Service Library (UNTESTED)
+
+> [English](README_en.md) | [中文](README.md)
 
 > UNTESTED — 当前为概念实现，建议仅用于开发参考，不建议在生产环境使用
 
