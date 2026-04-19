@@ -1,113 +1,100 @@
-# NodeLib_ANCS — AI 协作上下文
+# NodeLib_ANCS 开发指南
 
-ESP32 上的 iOS 通知接收库（BLE ANCS + AMS）。
-`NodeLib_ESP32_ANCS` 的重写版，遵循 `NodeLib/CONVENTIONS.md`。
+## 概览
 
----
+ANCS 库为 ESP32 提供 Apple CarPlay 音频通知服务支持。由于 ANCS 是 Apple 专有协议，此库主要作为概念验证和开发参考。
 
-## 职责
+## 协议实现
 
-通过 BLE 连接 iOS 设备，接收：
-- **ANCS**（Apple Notification Center Service）：通知推送（APP、标题、正文）
-- **AMS**（Apple Media Service）：媒体状态（曲目、艺术家、播放状态、音量）
+ANCS 使用以下 GATT 特性：
 
----
+| UUID | 名称 | 描述 |
+|------|------|------|
+| 0x1B00 | ANCS Service | 主服务 |
+| 0x1B01 | Media Notification | 媒体信息通知 |
+| 0x1B02 | Playback Status | 播放状态通知 |
+| 0x1B03 | Volume Control | 音量控制 |
+| 0x1B04 | Playback Rate | 播放速度控制 |
+| 0x1B05 | Playback Queue | 播放队列通知 |
 
-## 依赖
+### 媒体通知格式
 
-- ESP32 Arduino Core 3.x
-- `BLEDevice`（ESP32 内置 BLE 栈）
-- 无其他第三方依赖
-
----
-
-## 公开 API（目标设计）
-
-```cpp
-#include "NodeLib_ANCS.h"
-
-NodeLib_ANCS ancs;
-
-void setup() {
-    // 注册通知回调
-    ancs.onNotification([](uint32_t uid, const char* appId,
-                           const char* title, const char* body) {
-        // 处理通知
-    });
-
-    // 注册媒体回调
-    ancs.onMediaUpdate([](const char* title, const char* artist,
-                          bool isPlaying, uint8_t volume) {
-        // 处理媒体状态
-    });
-
-    // 注册状态变化回调
-    ancs.onStateChange([](NodeLib_ANCS::State s) {
-        // State::Idle / Advertising / Connecting / Running / Error
-    });
-
-    ancs.begin("PULSAR");  // BLE 广播名
-}
-
-void loop() {
-    ancs.loop();
+```json
+{
+  "bundleID": "com.apple Music",
+  "media": {
+    "artworkData64x64": "base64...",
+    "artworkData120x120": "base64...",
+    "artworkData600x600": "base64...",
+    "title": "Song Title",
+    "artist": "Artist Name",
+    "album": "Album Name",
+    "genre": "Genre",
+    "trackNumber": 1,
+    "trackCount": 10,
+    "discNumber": 1,
+    "discCount": 1,
+    "copyright": "© 2024",
+    "year": 2024,
+    "duration": 180,
+    "playbackPosition": 45
+  },
+  "playbackState": "nowPlaying",  // nowPlaying, paused, stopped
+  "isShuffled": false,
+  "isRepeatOn": false
 }
 ```
 
----
+### 播放状态
 
-## 相比旧版的改进
+```json
+{
+  "playbackState": "nowPlaying",  // nowPlaying, paused, stopped
+  "isPlaying": true,
+  "volume": 50,
+  "playbackRate": "normal"  // slow, normal, fast
+}
+```
 
-| 项目 | 旧版 NodeLib_ESP32_ANCS | 新版 |
-|------|------------------------|------|
-| 回调类型 | 裸函数指针 | `std::function`（支持 lambda） |
-| 字符串 | `String` 混用 | public API 全 `const char*` |
-| 内部方法 | `_underscore` 暴露在 public | 全部 `private` |
-| 断连处理 | 不完整 | 内置状态机，自动重连 |
-| AMS 支持 | 部分实现 | 完整（曲目/艺术家/状态/音量） |
-| Android GMCS | 无 | 计划支持 |
-| Debug 输出 | 常开 Serial | `NODELIB_DEBUG_LEVEL` 控制 |
+## 安全考虑
 
----
+ANCS 服务通常**不需要加密**（iOS 侧不要求），但建议在生产环境中启用：
 
-## 与 NodeLib_GMCS 并用的约束（重要）
-
-**ESP32 上只能有一个 `BLEDevice::init()`，两库不能同时 `begin()`。**
-
-正确用法：应用层按连接的设备类型二选一：
 ```cpp
-// iOS → 用 NodeLib_ANCS
-NodeLib_ANCS ancs;  ancs.begin("PULSAR");
-
-// Android → 用 NodeLib_GMCS（另编译或运行时判断）
-// NodeLib_GMCS gmcs;  gmcs.begin("PULSAR");
+BLEDevice::setEncryptionLevel(ESP_BLE_SEC_ENCRYPT);
 ```
 
-若需自动识别设备类型并切换，需在应用层实现 BLE 协调器，
-统一 `BLEDevice::init()`，按扫描结果决定启用哪个库。
-该复杂度不属于两个库的职责范围。
+## 常见问题
+
+### Q: 为什么 ANCS 连接不稳定？
+
+A: 可能是以下原因：
+1. 距离过远导致信号弱
+2. iOS 设备未授权 ANCS 访问
+3. GATT 服务未正确注册
+4. 干扰过多（2.4GHz 频段）
+
+### Q: 如何获取媒体封面？
+
+A: ANCS 发送 base64 编码的图片数据，需要解码保存为文件：
+
+```cpp
+if (artworkData64x64) {
+  // 解码 base64 并保存为文件
+}
+```
+
+## 开发建议
+
+1. **不要在生产环境使用** — ANCS 是专有协议，Apple 可能随时更改格式
+2. **优先使用 GMCS** — 如果设备是 Android，GMCS 是更好的选择
+3. **保持固件更新** — 确保 ESP32 Arduino 库支持最新的 GATT API
+
+## 参考
+
+- [Apple ANCS 文档](https://developer.apple.com/documentation/cpuservices/overview_of_audio_notifications_on_carplay)
+- [Nordic SDK ANCS 示例](https://github.com/NordicSemiconductor/nn_ancs)
 
 ---
 
-## 已知 BLE ANCS 注意事项
-
-- iOS 需要在系统设置 → 蓝牙 → 设备 → 允许通知，才能收到 ANCS 数据
-- ANCS 服务 UUID：`7905F431-B5CE-4E99-A40F-4B1E122D00D6`（Apple 专有，非标准）
-- AMS 服务 UUID：`89D3502B-0F36-433A-8EF4-C502AD55F8DC`
-- 配对必须完成（`esp_ble_set_security_param` 配置）才能订阅 ANCS characteristic
-- 断连后 iOS 不会主动重连，需要 ESP32 重新广播让用户从设置页重连
-
----
-
-## 文件结构
-
-```
-NodeLib_ANCS/
-├── src/
-│   ├── NodeLib_ANCS.h        公开接口
-│   └── NodeLib_ANCS.cpp      实现
-├── examples/
-│   └── Basic/Basic.ino       最小示例
-├── library.properties
-└── AGENTS.md                 本文件
-```
+*由 ASTROLAB / node0 开发*

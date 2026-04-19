@@ -1,50 +1,35 @@
 # NodeLib_ANCS
 
-ASTROLAB / node0 — iOS Media Control Service Library (UNTESTED)
+**ASTROLAB / node0** — ESP32 iOS 通知与媒体控制库
 
-> [English](README_en.md) | [中文](README.md)
-
-> UNTESTED — 当前为概念实现，建议仅用于开发参考，不建议在生产环境使用
+> 基于 BLE ANCS（Apple Notification Center Service）和 AMS（Apple Media Service），让 ESP32 接收 iPhone 的通知推送并控制媒体播放。
 
 ---
 
-## 概述
+## 支持功能
 
-NodeLib_ANCS 为 ESP32 提供 Apple CarPlay 音频通知服务（ANCS）支持，允许设备与 iOS 设备共享媒体播放状态和控制能力。
-
-### 支持功能
-
-- 媒体播放状态监听（播放/暂停）
-- 曲目/艺术家/专辑信息获取
-- 播放控制（play/pause/next/prev）
-- 音量控制
-- 错误处理与连接状态管理
-
-### 协议说明
-
-ANCS 基于 iOS 的 BLE 音频通知服务，使用以下服务 UUID：
-
-| UUID | 名称 | 说明 |
-|------|------|------|
-| `0x5B41` | `Service Media Service` | ANCS 服务 |
-| `0x5B43` | `Media Playback State` | 播放状态 |
-| `0x5B44` | `Media Playback Title` | 曲目标题 |
-| `0x5B46` | `Media Playback Artist` | 艺术家 |
-| `0x5B47` | `Media Playback Album` | 专辑 |
+| 功能 | 说明 |
+|------|------|
+| 通知接收 | App ID、标题、副标题、正文 |
+| 通知移除事件 | iOS 清除通知时触发回调 |
+| 通知操作 | Positive / Negative action（接听/拒接电话等）|
+| 通知过滤 | 白名单或黑名单，按 App ID 过滤 |
+| 媒体信息 | 曲目、艺术家、专辑、播放状态、音量、时长、进度 |
+| 媒体控制 | Play/Pause/Next/Prev/音量等 14 种命令 |
+| 队列信息 | 当前索引、队列总数 |
+| 配对 PIN | `IO_CAP_OUT` 模式，PIN 码通过回调推给用户 |
 
 ---
 
 ## 快速开始
 
-### 安装依赖
+### 安装
 
-```bash
-# Arduino IDE
-# 工具 → 库管理器 → 安装 ESP32 by Espressif
-# 工具 → 库管理器 → 安装 BluetoothFy BLE
-```
+Arduino IDE → 工具 → 库管理器，或者直接把 `NodeLib_ANCS` 文件夹放进 `Arduino/libraries/`。
 
-### 基本使用
+依赖：ESP32 Arduino Core（内置 BLE 库）。
+
+### 最简示例
 
 ```cpp
 #include "NodeLib_ANCS.h"
@@ -52,111 +37,199 @@ ANCS 基于 iOS 的 BLE 音频通知服务，使用以下服务 UUID：
 NodeLib_ANCS ancs;
 
 void setup() {
-  Serial.begin(115200);
-  ancs.begin("NodeLib");
+    Serial.begin(115200);
 
-  // 监听媒体更新
-  ancs.onMediaUpdate([](const char* title, const char* artist, bool isPlaying, uint8_t volume) {
-    Serial.printf("Title: %s, Artist: %s, Playing: %s, Volume: %d%%\n",
-      title ? title : "", artist ? artist : "", isPlaying ? "YES" : "NO", volume);
-  });
+    ancs.onNotification([](uint32_t uid, const char* appId,
+                            const char* title, const char* subtitle,
+                            const char* body) {
+        Serial.printf("[%s] %s\n%s\n", appId, title, body);
+    });
 
-  // 错误处理
-  ancs.onError([](const char* msg) {
-    Serial.printf("Error: %s\n", msg);
-  });
+    ancs.onMediaUpdate([](const NodeLib_ANCS::MediaInfo& m) {
+        Serial.printf("%s - %s [%s]\n",
+            m.title, m.artist, m.isPlaying ? "PLAY" : "PAUSE");
+    });
+
+    ancs.begin("MyDevice");
 }
 
 void loop() {
-  ancs.loop();
-
-  // 控制播放
-  // ancs.cmdPlayPause();
-  // ancs.cmdNext();
-  // ancs.cmdSetVolume(80);
-
-  delay(1);
+    ancs.loop();
+    delay(10);
 }
 ```
+
+### 配对流程
+
+1. 烧录后，iPhone 蓝牙设置里出现设备名（如 `MyDevice`）
+2. 点击配对 → iPhone 弹出 PIN 码输入框
+3. 注册 `onPairingPin` 后，ESP32 侧会收到 6 位数字供显示
+4. 用户在 iPhone 上输入 PIN → 配对完成，开始接收通知
+
+> iPhone 需在 **设置 → 蓝牙 → 设备详情** 里开启"显示通知"权限。
 
 ---
 
 ## API 参考
 
-### 生命周期
+### 初始化
 
-| 方法 | 说明 |
-|------|------|
-| `begin(const char* name)` | 初始化并启动广播 |
-| `loop()` | 处理 BLE 事件（需在 `loop()` 中调用） |
-| `restart()` | 重新初始化 |
-| `isConnected()` | 检查连接状态 |
+```cpp
+NodeLib_ANCS ancs;
+ancs.begin("DeviceName");
+```
+
+`loop()` 必须在 Arduino `loop()` 里持续调用。
+
+---
+
+### 通知回调
+
+```cpp
+ancs.onNotification([](uint32_t uid, const char* appId,
+                        const char* title, const char* subtitle,
+                        const char* body) {
+    // appId 示例：com.tencent.xin / com.apple.mobilephone
+    // uid 可用于 performNotifAction
+});
+```
+
+#### 通知移除
+
+```cpp
+ancs.onNotificationRemoved([](uint32_t uid) {
+    // 对应通知被用户在 iPhone 上清除
+});
+```
+
+#### 通知操作（接听 / 拒接）
+
+```cpp
+ancs.onNotification([](uint32_t uid, const char* appId,
+                        const char* title, const char* subtitle,
+                        const char* body) {
+    // 来电时接听
+    ancs.performNotifAction(uid, NodeLib_ANCS::NotifAction::Positive);
+    // 或拒接
+    // ancs.performNotifAction(uid, NodeLib_ANCS::NotifAction::Negative);
+});
+```
+
+---
+
+### 通知过滤
+
+```cpp
+// 白名单：只接收微信通知
+ancs.setNotifFilter("com.tencent.xin", true);
+
+// 黑名单：屏蔽某个 app
+ancs.setNotifFilter("com.apple.stocks", false);
+
+// 清空所有规则（接收全部）
+ancs.clearNotifFilter();
+```
+
+有白名单时，不在白名单中的 app 默认屏蔽；纯黑名单时，未列出的 app 默认放行。
+
+---
+
+### 媒体回调
+
+```cpp
+ancs.onMediaUpdate([](const NodeLib_ANCS::MediaInfo& m) {
+    Serial.printf("%s - %s [%s] vol=%d%%\n",
+        m.title, m.artist, m.isPlaying ? "PLAY" : "PAUSE", m.volume);
+    if (m.duration > 0)
+        Serial.printf("%.0f / %.0f s  queue %d/%d\n",
+            m.elapsed, m.duration, m.queueIndex, m.queueCount);
+});
+```
+
+`MediaInfo` 字段：
+
+| 字段 | 类型 | 不可用时 |
+|------|------|---------|
+| `title` / `artist` / `album` | `const char*` | 空字符串 |
+| `isPlaying` | `bool` | — |
+| `volume` | `uint8_t` 0~100 | `0xFF` |
+| `duration` / `elapsed` | `float` 秒 | `-1` |
+| `queueIndex` / `queueCount` | `int16_t` | `-1` |
+
+---
 
 ### 媒体控制
 
-| 方法 | 说明 |
-|------|------|
-| `cmdPlayPause()` | 切换播放/暂停 |
-| `cmdNext()` | 下一首 |
-| `cmdPrev()` | 上一首 |
-| `cmdSetVolume(uint8_t)` | 设置音量（0-100） |
+```cpp
+ancs.sendMediaCommand(NodeLib_ANCS::MediaCommand::NextTrack);
+ancs.sendMediaCommand(NodeLib_ANCS::MediaCommand::VolumeUp);
+```
 
-### 事件回调
+| 命令 | 说明 |
+|------|------|
+| `Play` / `Pause` / `TogglePlay` | 播放控制 |
+| `NextTrack` / `PrevTrack` | 切曲 |
+| `VolumeUp` / `VolumeDown` | 音量 |
+| `SkipForward` / `SkipBackward` | 快进/快退 |
+| `AdvanceRepeat` / `AdvanceShuffle` | 循环/随机模式 |
+| `Like` / `Dislike` / `Bookmark` | 收藏操作 |
+
+---
+
+### 配对 PIN
 
 ```cpp
-// 媒体更新
-void onMediaUpdate(
-    const char* title,
-    const char* artist,
-    bool        isPlaying,
-    uint8_t     volume
-);
-
-// 错误回调
-void onError(const char* msg);
+ancs.onPairingPin([](uint32_t pin) {
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%06lu", (unsigned long)pin);
+    // 显示在屏幕上，用户在 iPhone 输入
+});
 ```
 
 ---
 
-## 状态说明
+### 状态
 
-| 状态值 | 说明 |
-|--------|-------|
-| `Idle` | 未初始化 |
-| `Advertising` | 广播中，等待 iOS 连接 |
-| `Connecting` | iOS 已连接，建立配对 |
-| `Securing` | 加密配对中 |
-| `Ready` | ANCS 服务就绪 |
-| `Error` | 错误/超时 |
+```cpp
+ancs.onStateChange([](NodeLib_ANCS::State s) {
+    // Idle / Advertising / Connecting / Securing / Discovering / Running / Error
+});
 
----
-
-## 架构
-
-```
-NodeLib_ANCS/
-  src/
-    NodeLib_ANCS.h
-    NodeLib_ANCS.cpp
-  library.json
-  README.md
-  examples/
-    BriefCase/
-      BriefCase.ino
+NodeLib_ANCS::State s = ancs.getState();
+ancs.restart();  // 断连并重新广播
 ```
 
 ---
 
-## 注意事项
+### Debug 输出
 
+在 sketch 最顶部定义（必须在 `#include` 之前）：
 
-- **未测试**：当前为概念实现，建议仅用于开发参考
-- **兼容性**：仅支持 iOS 15+ 的 ANCS 协议
-- **安全性**：需 iOS 允许 BLE 访问（CarPlay 设置）
-- **生产环境**：不建议在生产环境使用，仅用于原型开发
+```cpp
+#define NODELIB_DEBUG_LEVEL 2   // 0=关 1=错误 2=详细
+#include "NodeLib_ANCS.h"
+```
 
 ---
 
-## 贡献
+## 硬件要求
 
-欢迎提交 Issue 和 PR。
+- ESP32 / ESP32-S3 / ESP32-C3（需支持 BLE 4.2+）
+- iPhone iOS 14+（iOS 16 验证通过）
+
+---
+
+## 已知限制
+
+- 同一时间只支持连接一台 iOS 设备
+- ANCS DS 为单槽解析：若 iOS 快速连发两条通知，第一条可能被第二条覆盖
+- iOS 26 可见性尚在测试中
+
+---
+
+## 版本历史
+
+| 版本 | 变更 |
+|------|------|
+| v1.1.0 | 副标题、通知移除、过滤、媒体命令、专辑/进度/队列、配对 PIN |
+| v1.0.0 | ANCS 通知接收、AMS 媒体信息 |
