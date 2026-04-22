@@ -4,6 +4,7 @@
 
 > 基于 BLE ANCS（Apple Notification Center Service）和 AMS（Apple Media Service），让 ESP32 接收 iPhone 的通知推送并控制媒体播放。
 
+有任何问题或bug欢迎提交issues或加入qq群1092618335讨论！
 ---
 
 ## 支持功能
